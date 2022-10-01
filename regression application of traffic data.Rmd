@@ -1,0 +1,182 @@
+---
+title: "ML Reg"
+author: "Hassnaa Abdelghany"
+date: '2022-05-20'
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+First I loaded the data and converted the date variable to extract the hours and day of the week the two variables are expected to be highly correlated with the traffic movement. 
+```{r}
+
+library(corrplot)
+library(DescTools)
+library(tidyr)
+library(dplyr)
+library(corrplot)
+library('caret')
+library(elasticnet)
+
+load('regmx.r')
+
+source('accur.r')
+
+
+options(scipen = 999)
+
+#setwd('C:\\Users\\ha437951\\Desktop\\ML')
+setwd('G:\\My Drive\\DSBA\\ML')
+```
+date_time column is transformed into more meaning full columns, like day, month, and hour.
+```{r}
+
+train = data.frame(read.csv('traffic_train.csv') )
+train$month <- format(as.Date(train$date_time), "%m")
+train$year <- format(as.Date(train$date_time), "%Y")
+train$monthday <- format(as.Date(train$date_time), "%d")
+train$weekday <- format(as.Date(train$date_time), "%u")
+train$hour <- substr(train$date_time , 11 ,13)
+
+# Convert all columns to factor
+train = as.data.frame(unclass(train),stringsAsFactors = TRUE)
+train = train[,-1] #remove date
+```
+to test the correlation of variable to to the dependent variable I am using correlation plot for numeric variables and Fit an Analysis of Variance Model for categorical variables.
+```{r}
+
+sapply(train , is.numeric) %>%
+  which() %>% 
+  names() %>%
+  train[,.] %>%
+  cor() -> p
+
+corrplot::corrplot(p)
+
+F_anova <- function(categorical_var) {
+  anova_ <- aov(train$traffic ~ 
+                  train[[categorical_var]]) 
+  
+  return(summary(anova_)[[1]][1, 4])
+}
+
+cat = sapply(train , is.factor) %>% which() %>% names()
+
+
+sapply(cat,
+       F_anova) %>% 
+  sort(decreasing = TRUE) -> anova_all_categorical
+
+data.frame(anova_all_categorical)
+
+```
+as expected the hours and weekdays are highly correlated with with dependent variable. and tempreture is suring a moderate correlation.
+
+Feature Handling
+```{r}
+selected = anova_all_categorical[c(1:3,5)] %>% names()
+train = train[,c(selected,'traffic')]
+
+```
+
+Partition section
+```{r}
+set.seed(676767)
+partion = createDataPartition(train$traffic,p = 0.2, list = FALSE) 
+train = train[partion,]
+test = train[-partion,]
+
+```
+I am using all selected variables and two interactions to evaluate the model. the log transformation will help with the data distribution and improve the model performance.
+```{r message=FALSE, warning=FALSE}
+
+train <- train %>% filter(traffic > 0) # very few obs might be omitted
+
+ridge_model = train( log (traffic + 1) ~ . + hour:weekday + hour:month   ,
+                     
+                    data = train,
+                    method = 'lm',
+                    trControl=trainControl("cv", number=3),
+
+)
+
+  
+test2 <- test %>% filter(traffic > 0)
+
+predicted <- predict(ridge_model, test2)
+
+predicted = exp(predicted) -1
+
+regressionMetrics(real = test2$traffic,
+                  predicted = predicted)
+
+res = abs(predicted - test2$traffic)
+
+plot(density(res))
+
+plot(x = predicted , y = test2$traffic, type = 'p' , main = 'Residuals', pch = 20 , col = alpha('blue', 0.4))
+
+plot(density(test2$traffic) , main = "Original Distribution of Traffic (Black) vs Predicted")+
+lines(density(predicted), col='red')
+
+```
+adding weights:
+
+in the residual plot we can see that the model often tend to over estimate the traffic prediction, mostly due to the data distribution, notice how the mean is slight in the upper section of the boxplot. this is causing the MAPE to go up as well. so I want the model to give more attention to the lower value traffic observations so I will add weights to addjust that.
+
+```{r}
+boxplot(train$traffic)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+weightslist <- ifelse(train$traffic < 1000 ,
+                    0.92,
+                    0.18)
+train <- train %>% filter(traffic > 0)
+
+ridge_model = train( log (traffic + 1) ~ . + hour:weekday + hour:month   ,
+                     
+                    data = train,
+                    method = 'lm', 
+                    
+                    
+                    trControl=trainControl("cv", number=3),
+                    weights = weightslist,
+
+)
+
+test2 <- test %>% filter(traffic > 0)
+
+predicted <- predict(ridge_model, test2)
+
+predicted = exp(predicted) -1
+
+regressionMetrics(real = test2$traffic,
+                  predicted = predicted)
+
+res = abs(predicted - test2$traffic)
+
+```
+notice how the MAPE value changed. further more, the residuals can be observed in the both section of the plot (error is not only biased to high values)
+
+```{r}
+
+
+plot(density(res))
+
+plot(x = predicted , y = test2$traffic, type = 'p' , main = 'Residuals', pch = 20 , col = alpha('blue', 0.4))
+
+plot(density(test2$traffic) , main = "Original Distribution of Traffic (Black) vs Predicted")+
+lines(density(predicted), col='red')
+
+```
